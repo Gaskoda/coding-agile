@@ -128,6 +128,7 @@ class Agent:
         pieces=[subprocess.run(["git","diff","--no-ext-diff"],cwd=self.root,capture_output=True,text=True,env=self.git_env).stdout]
         names=subprocess.run(["git","ls-files","--others","--exclude-standard"],cwd=self.root,capture_output=True,text=True,env=self.git_env).stdout.splitlines()
         for name in names:
+            if any(part in {".runs", ".agent_home", "__pycache__", ".pytest_cache"} for part in Path(name).parts) or name.endswith((".pyc", ".pyo", ".coverage")): continue
             path=self.root/name
             if path.is_file() and path.stat().st_size<=1000000:
                 pieces.append(subprocess.run(["git","diff","--no-index","--","/dev/null",name],cwd=self.root,capture_output=True,text=True,env=self.git_env).stdout)

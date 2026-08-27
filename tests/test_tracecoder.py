@@ -33,6 +33,8 @@ class SafetyTests(Case):
         with self.assertRaises(SafetyError): self.policy.path(".env")
     def test_danger(self): self.assertFalse(RunCommand().execute({"command":"rm -rf ."},self.policy).ok)
     def test_network(self): self.assertFalse(RunCommand().execute({"command":"curl https://example.com"},self.policy).ok)
+    def test_plain_delete(self): self.assertFalse(RunCommand().execute({"command":"rm calc.py"},self.policy).ok)
+    def test_secret_via_shell(self): self.assertFalse(RunCommand().execute({"command":"cat .env"},self.policy).ok)
 class ToolTests(Case):
     def test_read_search(self):
         self.assertIn("return a - b",ReadFile().execute({"path":"calc.py"},self.policy).output)
@@ -57,4 +59,11 @@ class AgentTests(Case):
             call("3","run_command",{"command":"python3 -m unittest -q"}),call("4","finish",{"summary":"done","tests":"passed"})])
         result=Agent(model,self.root,max_turns=6).run("Fix add")
         self.assertTrue(result.success); self.assertTrue(any("Completion rejected" in str(m.get("content")) for m in result.state.messages))
+    def test_run_artifacts_are_not_a_diff(self):
+        model=ScriptedModel([call("1","run_command",{"command":"python3 -m unittest -q"}),
+            call("2","finish",{"summary":"unchanged","tests":"passed"}),
+            call("3","finish",{"summary":"unchanged","tests":"passed"})])
+        result=Agent(model,self.root,max_turns=3).run("Do nothing")
+        self.assertFalse(result.success)
+        self.assertTrue(any("No changes detected" in str(m.get("content")) for m in result.state.messages))
 if __name__=="__main__": unittest.main()

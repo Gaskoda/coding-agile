@@ -86,3 +86,17 @@ loop linear and inspectable; use executable feedback; localize before loading co
 patches; separate the model's completion request from deterministic verification; and preserve trajectories
 for debugging and later learning. It intentionally avoids multi-agent orchestration, vector databases, and
 training infrastructure until the single-agent baseline is reliable.
+## Research references
+
+The implementation is original, but its design choices were informed by:
+
+- mini-SWE-agent: minimal linear loop and shell-oriented baseline
+  https://github.com/SWE-agent/mini-swe-agent
+- SWE-agent: explicit agent-computer interfaces and trajectory inspection
+  https://github.com/SWE-agent/SWE-agent
+- Dive into Claude Code (2026): context compaction, permissions and harness design
+  https://arxiv.org/abs/2604.14228
+- What Context Does a Coding Agent Actually Need to Act? (2026): focused source context
+  https://arxiv.org/abs/2607.09691
+- SWE-smith: executable software-engineering tasks and trajectory-driven evaluation
+  https://github.com/SWE-bench/SWE-smith

@@ -8,7 +8,7 @@ class SafetyPolicy:
     BLOCKED=(r"(^|\s)rm\s+.*-[a-z]*r[a-z]*f",r"(^|\s)rm\s+.*-[a-z]*f[a-z]*r",
       r"(^|\s)(sudo|su|mkfs|fdisk|parted|shutdown|reboot)(\s|$)",
       r"(^|\s)git\s+(push|reset\s+--hard|clean\s+-[a-z]*f)",r"(^|\s)(env|printenv)(\s|$)",
-      r"(^|\s)(chown|chmod\s+.*-[a-z]*r)(\s|$)",r"(^|\s)(curl|wget).*(\||&&|;)\s*(sh|bash|python)")
+      r"(^|\s)(chown|chmod\s+.*-[a-z]*r)(\s|$)",r"(^|[;&|]\s*|\s)rm(\s|$)",r"(^|\s)(curl|wget).*(\||&&|;)\s*(sh|bash|python)")
     def __init__(self,root:Path,allow_network=False): self.root=root.resolve(); self.allow_network=allow_network
     def path(self,value:str,write=False):
         if not value or "\0" in value: raise SafetyError("Invalid empty path")
@@ -29,6 +29,7 @@ class SafetyPolicy:
         try: tokens=shlex.split(value)
         except ValueError as exc: raise SafetyError(f"Invalid quoting: {exc}") from exc
         for token in tokens:
+            if Path(token.strip(";|&")).name.lower() in self.SENSITIVE: raise SafetyError("Sensitive file in command")
             if token.startswith("/"):
                 try: Path(token.split(":",1)[0]).resolve().relative_to(self.root)
                 except ValueError as exc: raise SafetyError(f"Path outside workspace: {token}") from exc
