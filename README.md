@@ -88,7 +88,10 @@ shell. The latter stays disabled unless explicitly enabled.
 A `finish` request is rejected when there is no diff, whitespace validation fails, the latest test failed,
 no test was run (default), the change is excessively large, or assertions appear to have been removed.
 Git targets use `git diff --check`; plain directories validate their generated unified diff.
-A model claim alone is never treated as proof of completion.
+A model claim alone is never treated as proof of completion. After a passing test, the harness explicitly
+asks the model to finish instead of rereading without a concrete risk. If the turn budget is exhausted before
+that call, the same deterministic verifier runs automatically: a valid diff and latest passing test produce
+`verified_complete_auto`; otherwise the run remains a `max_turns` failure.
 
 ## Run artifacts
 

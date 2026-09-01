@@ -70,7 +70,7 @@ class Agent:
         self._emit("start",task=state.task,root=str(self.root),workspace_mode="git" if self.git_mode else "plain",run_dir=str(logger.run_dir))
         try:
             for turn in range(1,self.max_turns+1):
-                state.turn=turn; self._compact(state)
+                state.turn=turn; tests_before=len(state.tests); self._compact(state)
                 self._emit("model_wait",turn=turn)
                 try:
                     response=self.model.complete(state.messages,self.schemas()); state.add_usage(response.usage); calls=self._calls(response.message)
@@ -97,12 +97,19 @@ class Agent:
                         self._emit("tool_end",turn=turn,tool=name,ok=event.ok,output=event.output,duration_ms=event.duration_ms,metadata=event.metadata)
                         state.messages.append(self._tool_message(call_id,name,event.ok,event.output,event.metadata))
                 if success: break
+                if len(state.tests)>tests_before and state.tests[-1]["ok"]:
+                    state.messages.append({"role":"user","content":"The latest test command passed. If the requested work is complete, call finish now with a concise summary and test evidence; do not reread files without a specific unresolved risk."})
                 if self._stagnating(state):
                     warnings+=1
                     if warnings>=2: state.stop_reason,state.final_message="stagnation","Repeated actions produced no evidence"; break
                     state.messages.append({"role":"user","content":"Three identical actions repeated. Choose a materially different action."})
                 else: warnings=0
-            else: state.stop_reason,state.final_message="max_turns",f"Reached {self.max_turns} turns"
+            else:
+                tests=state.tests[-1]["command"] if state.tests else "none"
+                accepted,text=self._verify(state,{"summary":"Completed with deterministic evidence at the turn limit","tests":tests,"risks":"The model did not explicitly call finish"})
+                self._emit("verification",turn=state.turn,ok=accepted,output=text,automatic=True)
+                if accepted: success=True; state.stop_reason,state.final_message="verified_complete_auto",text
+                else: state.stop_reason,state.final_message="max_turns",f"Reached {self.max_turns} turns\n{text}"
         except KeyboardInterrupt: state.stop_reason,state.final_message="interrupted","Interrupted"
         except Exception as exc: state.stop_reason,state.final_message="internal_error",f"{type(exc).__name__}: {exc}"
         diff=self._diff(); logger.finish(state,diff)
