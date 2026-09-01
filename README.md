@@ -1,5 +1,19 @@
 # TraceCoder
 
+## AGENTS.md project instructions
+
+TraceCoder v0.2 automatically loads project instructions from `AGENTS.md`. Rules are hierarchical: a root file applies to the whole workspace, while a file in a nested directory applies only below that directory and overrides conflicting parent rules. Root instructions are supplied at startup; newly discovered nested instructions are shown before the first affected edit and the edit must then be retried.
+
+Example:
+
+```text
+project/AGENTS.md
+project/backend/AGENTS.md
+project/backend/app.py
+```
+
+When working on `backend/app.py`, both instruction files apply, with `backend/AGENTS.md` taking precedence. Each file is limited to 32,000 characters and the applicable chain to 64,000 characters.
+
 TraceCoder is a small coding-agent harness implemented without LangChain, LlamaIndex, an Agents SDK,
 or hosted code-execution tools. Its core is an explicit model-tool loop around five local tools:
 

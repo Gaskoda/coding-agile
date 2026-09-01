@@ -4,6 +4,7 @@ from dataclasses import asdict,dataclass,field
 from datetime import datetime,timezone
 from pathlib import Path
 from typing import Any
+from .instructions import AgentInstructions,InstructionsError
 from .model import ChatModel,ModelError
 from .safety import SafetyPolicy
 from .tools import Tool,default_tools
@@ -54,6 +55,7 @@ class Agent:
         self.require_tests=require_tests; self.context_chars=context_chars; self.observer=observer
         self.tools={t.name:t for t in (tools or default_tools())}; self.policy=SafetyPolicy(self.root,allow_network_commands)
         self.git_env={"GIT_CONFIG_COUNT":"1","GIT_CONFIG_KEY_0":"safe.directory","GIT_CONFIG_VALUE_0":str(self.root)}
+        self.instructions=AgentInstructions(self.root); self.exposed_instructions:set[str]=set()
         self.git_mode=(self.root/".git").exists(); self.initial_snapshot=None
     def _emit(self,kind,**data):
         if self.observer is None: return
@@ -65,7 +67,11 @@ class Agent:
         self.git_mode=(self.root/".git").exists()
         self.initial_snapshot=None if self.git_mode else snapshot(self.root)
         state=State(task.strip(),self.root,self.max_turns)
-        state.messages=[{"role":"system","content":PROMPT},{"role":"user","content":f"Workspace: {self.root}\nTask: {task.strip()}\nInspect first."}]
+        self.instructions.invalidate()
+        root_documents=self.instructions.applicable(self.root)
+        self.exposed_instructions={str(doc.path) for doc in root_documents}
+        instruction_text=self.instructions.render(root_documents)
+        state.messages=[{"role":"system","content":PROMPT+"\n\n"+instruction_text},{"role":"user","content":f"Workspace: {self.root}\nTask: {task.strip()}\nInspect first."}]
         logger=RunLogger(self.root); logger.write({"type":"start","task":state.task,"workspace_mode":"git" if self.git_mode else "plain"}); errors=warnings=0; success=False
         self._emit("start",task=state.task,root=str(self.root),workspace_mode="git" if self.git_mode else "plain",run_dir=str(logger.run_dir))
         try:
@@ -128,11 +134,38 @@ class Agent:
         started=time.monotonic()
         try:
             if name not in self.tools: raise ValueError(f"Unknown tool: {name}")
+            instruction_result=self._instruction_preflight(name,args)
+            if instruction_result is not None:
+                ok,output,meta=False,instruction_result,{"instructions_required":True}
+                elapsed=int((time.monotonic()-started)*1000); meta["duration_ms"]=elapsed
+                return Event(turn,name,args,ok,output,elapsed,meta)
             result=(self.tools[name].execute(args,self.policy,on_output=lambda line: self._emit("command_output",turn=turn,output=line))
                     if name=="run_command" else self.tools[name].execute(args,self.policy)); ok,output,meta=result.ok,result.output,result.metadata
+            if name=="apply_patch" and ok:
+                changed=[Path(value) for value in meta.get("modified_files",[]) if Path(value).name=="AGENTS.md"]
+                if changed:
+                    self.instructions.invalidate()
+                    self.exposed_instructions.difference_update(str((self.root/value).resolve()) for value in changed)
         except Exception as exc: ok,output,meta=False,f"{type(exc).__name__}: {exc}",{}
         elapsed=int((time.monotonic()-started)*1000); meta.setdefault("duration_ms",elapsed)
         return Event(turn,name,args,ok,output,elapsed,meta)
+    def _instruction_preflight(self,name,args):
+        targets=[]
+        if name=="apply_patch":
+            targets=[value.strip() for value in self.tools[name].PATH.findall(str(args.get("patch",""))) if value.strip()!="/dev/null"]
+        elif name=="read_file": targets=[str(args.get("path","."))]
+        if not targets: return None
+        documents=[]
+        try:
+            for target in targets:
+                for document in self.instructions.applicable(target):
+                    if str(document.path) not in self.exposed_instructions and document not in documents:
+                        documents.append(document)
+        except InstructionsError as exc:
+            return f"Cannot load project instructions: {exc}"
+        if not documents: return None
+        self.exposed_instructions.update(str(document.path) for document in documents)
+        return self.instructions.render(documents)+"\n\nReview these newly discovered rules, then retry the tool call."
     @staticmethod
     def _tool_message(call_id,name,ok,output,metadata=None):
         return {"role":"tool","tool_call_id":call_id,"name":name,"content":json.dumps({"ok":ok,"output":output,"metadata":metadata or {}},ensure_ascii=False)}
