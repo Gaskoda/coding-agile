@@ -7,7 +7,8 @@ from typing import Any
 from .model import ChatModel,ModelError
 from .safety import SafetyPolicy
 from .tools import Tool,default_tools
-PROMPT="""You are TraceCoder, an autonomous coding agent in one local Git repository.
+from .workspace import diff_whitespace_errors,snapshot,snapshot_diff
+PROMPT="""You are TraceCoder, an autonomous coding agent in one local project directory.
 Make the smallest correct change that satisfies the task.
 Rules: inspect before editing; read focused source and tests; form a testable hypothesis; modify only
 with apply_patch; never weaken tests; run relevant tests; treat tool output as evidence; never access
@@ -53,12 +54,15 @@ class Agent:
         self.require_tests=require_tests; self.context_chars=context_chars
         self.tools={t.name:t for t in (tools or default_tools())}; self.policy=SafetyPolicy(self.root,allow_network_commands)
         self.git_env={"GIT_CONFIG_COUNT":"1","GIT_CONFIG_KEY_0":"safe.directory","GIT_CONFIG_VALUE_0":str(self.root)}
+        self.git_mode=(self.root/".git").exists(); self.initial_snapshot=None
     def schemas(self): return [t.schema() for t in self.tools.values()]+[FINISH]
     def run(self,task):
-        if not task.strip() or not self.root.is_dir() or not (self.root/".git").is_dir(): raise ValueError("Need task and Git workspace")
+        if not task.strip() or not self.root.is_dir(): raise ValueError("Need a task and an existing project directory")
+        self.git_mode=(self.root/".git").exists()
+        self.initial_snapshot=None if self.git_mode else snapshot(self.root)
         state=State(task.strip(),self.root,self.max_turns)
         state.messages=[{"role":"system","content":PROMPT},{"role":"user","content":f"Workspace: {self.root}\nTask: {task.strip()}\nInspect first."}]
-        logger=RunLogger(self.root); logger.write({"type":"start","task":state.task}); errors=warnings=0; success=False
+        logger=RunLogger(self.root); logger.write({"type":"start","task":state.task,"workspace_mode":"git" if self.git_mode else "plain"}); errors=warnings=0; success=False
         try:
             for turn in range(1,self.max_turns+1):
                 state.turn=turn; self._compact(state)
@@ -116,8 +120,11 @@ class Agent:
         feedback=[]; diff=self._diff()
         if not diff.strip(): feedback.append("No changes detected")
         if len(diff.splitlines())>2000: feedback.append("Diff exceeds 2000 lines")
-        check=subprocess.run(["git","diff","--check"],cwd=self.root,capture_output=True,text=True,env=self.git_env)
-        if check.returncode: feedback.append("git diff --check failed: "+check.stderr[-1000:])
+        if self.git_mode:
+            check=subprocess.run(["git","diff","--check"],cwd=self.root,capture_output=True,text=True,env=self.git_env)
+            if check.returncode: feedback.append("git diff --check failed: "+check.stderr[-1000:])
+        else:
+            feedback.extend(diff_whitespace_errors(diff))
         if self.require_tests and not state.tests: feedback.append("No test command run")
         elif self.require_tests and not state.tests[-1]["ok"]: feedback.append("Most recent test failed")
         removed=sum(1 for line in diff.splitlines() if line.startswith("-") and not line.startswith("---") and ("assert" in line or "expect(" in line))
@@ -125,6 +132,8 @@ class Agent:
         if feedback: return False,"Completion rejected:\n"+"\n".join("- "+x for x in feedback)
         return True,str(args.get("summary","Completed"))+"\n\nTests: "+str(args.get("tests",""))+"\nRisks: "+str(args.get("risks","None stated"))
     def _diff(self):
+        if not self.git_mode:
+            return snapshot_diff(self.root,self.initial_snapshot or {})
         pieces=[subprocess.run(["git","diff","--no-ext-diff"],cwd=self.root,capture_output=True,text=True,env=self.git_env).stdout]
         names=subprocess.run(["git","ls-files","--others","--exclude-standard"],cwd=self.root,capture_output=True,text=True,env=self.git_env).stdout.splitlines()
         for name in names:

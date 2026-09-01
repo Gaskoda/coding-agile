@@ -68,7 +68,7 @@ class SearchText(Tool):
                     if len(out)==limit: return ToolResult(True,"\n".join(out)+"\n... truncated")
         return ToolResult(True,"\n".join(out) or "No matches")
 class ApplyPatch(Tool):
-    name="apply_patch"; description="Apply a unified git diff after validating target paths."
+    name="apply_patch"; description="Apply a unified diff after validating target paths."
     parameters={"type":"object","properties":{"patch":{"type":"string"}},"required":["patch"]}
     PATH=re.compile(r"^(?:---|\+\+\+)\s+(?:[ab]/)?([^\t\n]+)",re.MULTILINE)
     def execute(self,args,policy):
@@ -82,12 +82,21 @@ class ApplyPatch(Tool):
         try:
             for value in paths: policy.path(value,write=True)
         except Exception as exc: return ToolResult(False,str(exc))
-        git_env=os.environ.copy(); git_env.update({"GIT_CONFIG_COUNT":"1","GIT_CONFIG_KEY_0":"safe.directory","GIT_CONFIG_VALUE_0":str(policy.root)})
-        check=subprocess.run(["git","apply","--check","--whitespace=nowarn","-"],input=patch,text=True,cwd=policy.root,capture_output=True,timeout=30,env=git_env)
-        if check.returncode: return ToolResult(False,"Patch check failed:\n"+check.stderr[-4000:])
-        result=subprocess.run(["git","apply","--whitespace=nowarn","-"],input=patch,text=True,cwd=policy.root,capture_output=True,timeout=30,env=git_env)
-        if result.returncode: return ToolResult(False,"Patch failed:\n"+result.stderr[-4000:])
-        return ToolResult(True,"Patch applied: "+", ".join(paths),{"modified_files":paths})
+        if (policy.root/".git").exists():
+            git_env=os.environ.copy(); git_env.update({"GIT_CONFIG_COUNT":"1","GIT_CONFIG_KEY_0":"safe.directory","GIT_CONFIG_VALUE_0":str(policy.root)})
+            check_cmd=["git","apply","--check","--whitespace=nowarn","-"]
+            apply_cmd=["git","apply","--whitespace=nowarn","-"]
+            env=git_env
+        else:
+            check_cmd=["patch","--dry-run","--batch","--forward","--reject-file=-","-p1"]
+            apply_cmd=["patch","--batch","--forward","--reject-file=-","-p1"]
+            env=None
+        check=subprocess.run(check_cmd,input=patch,text=True,cwd=policy.root,capture_output=True,timeout=30,env=env)
+        if check.returncode: return ToolResult(False,"Patch check failed:\n"+(check.stdout+check.stderr)[-4000:])
+        result=subprocess.run(apply_cmd,input=patch,text=True,cwd=policy.root,capture_output=True,timeout=30,env=env)
+        if result.returncode: return ToolResult(False,"Patch failed:\n"+(result.stdout+result.stderr)[-4000:])
+        mode="git" if (policy.root/".git").exists() else "plain"
+        return ToolResult(True,"Patch applied: "+", ".join(paths),{"modified_files":paths,"mode":mode})
 class RunCommand(Tool):
     name="run_command"; description="Run one non-interactive workspace command with timeout."
     parameters={"type":"object","properties":{"command":{"type":"string"},"timeout":{"type":"integer"}},"required":["command"]}

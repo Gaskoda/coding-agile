@@ -15,7 +15,8 @@ completion checks, compacted history, repeated-action detection, token accountin
 ## Requirements
 
 - Python 3.10+
-- Git
+- GNU patch (for non-Git project directories)
+- Git is optional for target directories, but used when available
 - An OpenAI-compatible chat-completions endpoint with native tool calling
 
 No Python runtime dependencies are required.
@@ -45,14 +46,17 @@ the local file; environment variables remain a fallback. Use `--config /path/fil
 
 ## Run
 
-The target must be a Git repository:
+The target can be either a Git repository or an ordinary project directory:
 
 ```bash
 python3 -m tracecoder.cli \
-  --cwd /path/to/repository \
-  --model deepseek-v4-pro \
+  --cwd /path/to/project \
   'Fix the failing parser test without weakening tests'
 ```
+
+Git targets use `git apply` and `git diff`. Plain directories use GNU `patch`, an in-memory
+pre-task snapshot, SHA-256 file tracking, and `difflib` to produce the same `final.diff`. TraceCoder
+does not create a Git repository in a plain target.
 
 Useful controls:
 
@@ -68,8 +72,9 @@ shell. The latter stays disabled unless explicitly enabled.
 
 ## Completion policy
 
-A `finish` request is rejected when there is no diff, `git diff --check` fails, the latest test failed,
+A `finish` request is rejected when there is no diff, whitespace validation fails, the latest test failed,
 no test was run (default), the change is excessively large, or assertions appear to have been removed.
+Git targets use `git diff --check`; plain directories validate their generated unified diff.
 A model claim alone is never treated as proof of completion.
 
 ## Run artifacts
@@ -89,8 +94,9 @@ API keys are read by the model client and are not inserted into prompts or logs.
 python3 -m unittest discover -s tests -v
 ```
 
-The suite uses temporary Git repositories under `/mnt/82_store/mj`, exercises the real tools, and includes
-a deterministic scripted-model repair from a failing test to a verifier-approved finish.
+The suite uses temporary Git repositories and ordinary directories under `/mnt/82_store/mj`, exercises
+the real tools in both modes, and includes deterministic scripted-model repairs from a failing test to a
+verifier-approved finish.
 
 ## Design rationale
 
