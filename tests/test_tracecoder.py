@@ -2,6 +2,7 @@ from __future__ import annotations
 import json,os,subprocess,tempfile,unittest
 from pathlib import Path
 from tracecoder.agent import Agent
+from tracecoder.config import ConfigError, load_config
 from tracecoder.model import ScriptedModel
 from tracecoder.safety import SafetyError,SafetyPolicy
 from tracecoder.tools import ApplyPatch,ReadFile,RunCommand,SearchText
@@ -26,6 +27,18 @@ class Case(unittest.TestCase):
 -    return a - b
 +    return a + b
 """
+class ConfigTests(Case):
+    def test_load_local_json(self):
+        path=self.root/"config.json"
+        path.write_text(json.dumps({"api_key":"secret","model":"demo","max_turns":7}))
+        cfg=load_config(path)
+        self.assertEqual(cfg["model"],"demo"); self.assertEqual(cfg["max_turns"],7)
+    def test_missing_config_is_empty(self):
+        self.assertEqual(load_config(self.root/"missing.json"),{})
+    def test_unknown_key_is_rejected(self):
+        path=self.root/"config.json"; path.write_text(json.dumps({"unexpected":True}))
+        with self.assertRaises(ConfigError): load_config(path)
+
 class SafetyTests(Case):
     def test_escape(self):
         with self.assertRaises(SafetyError): self.policy.path("../../etc/passwd")

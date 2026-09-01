@@ -22,13 +22,26 @@ No Python runtime dependencies are required.
 
 ## Configure DeepSeek
 
-Keep credentials in the process environment. Never commit them:
+Copy the tracked blank example to the ignored local config, then edit it:
 
 ```bash
-export DEEPSEEK_API_KEY='...'
-export OPENAI_BASE_URL='https://api.deepseek.com/v1'
-export TRACECODER_MODEL='deepseek-v4-pro'
+cp tracecoder.example.json tracecoder.local.json
+vim tracecoder.local.json
 ```
+
+```json
+{
+  "api_key": "your-key",
+  "base_url": "https://api.deepseek.com/v1",
+  "model": "deepseek-v4-pro",
+  "max_turns": 30,
+  "context_chars": 80000
+}
+```
+
+`tracecoder.local.json` is ignored by Git. Never put a real key in the tracked example: replacing
+a committed secret with an empty value does not remove it from Git history. Command-line options override
+the local file; environment variables remain a fallback. Use `--config /path/file.json` for another file.
 
 ## Run
 
