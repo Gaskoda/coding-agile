@@ -58,6 +58,19 @@ Git targets use `git apply` and `git diff`. Plain directories use GNU `patch`, a
 pre-task snapshot, SHA-256 file tracking, and `difflib` to produce the same `final.diff`. TraceCoder
 does not create a Git repository in a plain target.
 
+### Interactive live CLI
+
+Start a reusable prompt for one target project:
+
+```bash
+python3 -m tracecoder.cli --interactive --cwd /path/to/project
+```
+
+Enter a coding task at `tracecoder>`. The terminal immediately reports model waits, planned tool calls,
+file reads and patches, command output line by line, test results, and completion verification. Use `/help`
+for prompt commands and `/quit` to exit. A one-shot task also shows live progress by default; pass `--quiet`
+for the previous final-result-only output.
+
 Useful controls:
 
 ```text

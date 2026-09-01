@@ -1,5 +1,5 @@
 from __future__ import annotations
-import os,re,subprocess,time
+import os,re,selectors,signal,subprocess,time
 from dataclasses import dataclass,field
 from pathlib import Path
 from typing import Any
@@ -101,18 +101,41 @@ class RunCommand(Tool):
     name="run_command"; description="Run one non-interactive workspace command with timeout."
     parameters={"type":"object","properties":{"command":{"type":"string"},"timeout":{"type":"integer"}},"required":["command"]}
     TESTS=("pytest","unittest","npm test","pnpm test","cargo test","go test")
-    def execute(self,args,policy):
+    def execute(self,args,policy,on_output=None):
         command=self.text(args,"command"); timeout=self.integer(args,"timeout",60,1,300)
         try: policy.command(command)
         except Exception as exc: return ToolResult(False,str(exc),{"blocked":True})
-        started=time.monotonic()
+        started=time.monotonic(); chunks=[]; timed_out=False
+        env={"PATH":"/usr/local/bin:/usr/bin:/bin","HOME":str(policy.root/".agent_home"),"PYTHONPATH":str(policy.root),"LANG":"C.UTF-8","PYTHONUNBUFFERED":"1"}
+        process=subprocess.Popen(command,cwd=policy.root,shell=True,executable="/bin/bash",stdout=subprocess.PIPE,
+            stderr=subprocess.STDOUT,text=True,bufsize=1,env=env,start_new_session=True)
+        selector=selectors.DefaultSelector(); selector.register(process.stdout,selectors.EVENT_READ)
         try:
-            result=subprocess.run(command,cwd=policy.root,shell=True,executable="/bin/bash",capture_output=True,text=True,timeout=timeout,
-                env={"PATH":"/usr/local/bin:/usr/bin:/bin","HOME":str(policy.root/".agent_home"),"PYTHONPATH":str(policy.root),"LANG":"C.UTF-8"})
-        except subprocess.TimeoutExpired as exc:
-            return ToolResult(False,f"Timed out after {timeout}s\n"+str(exc.stdout or "")[-8000:],{"timeout":True})
-        output=result.stdout+("\n[stderr]\n"+result.stderr if result.stderr else "")
+            while True:
+                remaining=timeout-(time.monotonic()-started)
+                if remaining<=0:
+                    timed_out=True; os.killpg(process.pid,signal.SIGKILL); break
+                ready=selector.select(min(.2,remaining))
+                for key,_ in ready:
+                    line=key.fileobj.readline()
+                    if line:
+                        chunks.append(line)
+                        if on_output: on_output(line.rstrip("\n"))
+                if process.poll() is not None:
+                    tail=process.stdout.read()
+                    if tail:
+                        chunks.append(tail)
+                        if on_output:
+                            for line in tail.splitlines(): on_output(line)
+                    break
+            process.wait()
+        finally:
+            selector.close(); process.stdout.close()
+        output="".join(chunks)
         if len(output)>12000: output=output[:4000]+"\n... truncated ...\n"+output[-8000:]
-        return ToolResult(result.returncode==0,output or "(no output)",{"exit_code":result.returncode,
-            "duration_ms":int((time.monotonic()-started)*1000),"is_test":any(x in command.lower() for x in self.TESTS)})
+        meta={"exit_code":process.returncode,"duration_ms":int((time.monotonic()-started)*1000),
+              "is_test":any(x in command.lower() for x in self.TESTS)}
+        if timed_out:
+            meta["timeout"]=True; return ToolResult(False,f"Timed out after {timeout}s\n"+output[-8000:],meta)
+        return ToolResult(process.returncode==0,output or "(no output)",meta)
 def default_tools(): return [ListFiles(),SearchText(),ReadFile(),ApplyPatch(),RunCommand()]

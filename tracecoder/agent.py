@@ -49,12 +49,16 @@ class RunLogger:
         (self.run_dir/"transcript.md").write_text("\n\n".join(f"## {m.get('role')}\n{m.get('content','')}" for m in state.messages),encoding="utf-8")
 class Agent:
     def __init__(self,model:ChatModel,root:Path,*,tools:list[Tool]|None=None,max_turns=30,max_errors=4,
-                 require_tests=True,allow_network_commands=False,context_chars=80000):
+                 require_tests=True,allow_network_commands=False,context_chars=80000,observer=None):
         self.model=model; self.root=root.resolve(); self.max_turns=max_turns; self.max_errors=max_errors
-        self.require_tests=require_tests; self.context_chars=context_chars
+        self.require_tests=require_tests; self.context_chars=context_chars; self.observer=observer
         self.tools={t.name:t for t in (tools or default_tools())}; self.policy=SafetyPolicy(self.root,allow_network_commands)
         self.git_env={"GIT_CONFIG_COUNT":"1","GIT_CONFIG_KEY_0":"safe.directory","GIT_CONFIG_VALUE_0":str(self.root)}
         self.git_mode=(self.root/".git").exists(); self.initial_snapshot=None
+    def _emit(self,kind,**data):
+        if self.observer is None: return
+        try: self.observer({"type":kind,**data})
+        except Exception: pass
     def schemas(self): return [t.schema() for t in self.tools.values()]+[FINISH]
     def run(self,task):
         if not task.strip() or not self.root.is_dir(): raise ValueError("Need a task and an existing project directory")
@@ -63,16 +67,20 @@ class Agent:
         state=State(task.strip(),self.root,self.max_turns)
         state.messages=[{"role":"system","content":PROMPT},{"role":"user","content":f"Workspace: {self.root}\nTask: {task.strip()}\nInspect first."}]
         logger=RunLogger(self.root); logger.write({"type":"start","task":state.task,"workspace_mode":"git" if self.git_mode else "plain"}); errors=warnings=0; success=False
+        self._emit("start",task=state.task,root=str(self.root),workspace_mode="git" if self.git_mode else "plain",run_dir=str(logger.run_dir))
         try:
             for turn in range(1,self.max_turns+1):
                 state.turn=turn; self._compact(state)
+                self._emit("model_wait",turn=turn)
                 try:
                     response=self.model.complete(state.messages,self.schemas()); state.add_usage(response.usage); calls=self._calls(response.message)
                 except (ModelError,ValueError) as exc:
+                    self._emit("model_error",turn=turn,error=str(exc))
                     errors+=1; state.messages.append({"role":"user","content":f"Invalid response: {exc}. Return a valid tool call."})
                     if errors>=self.max_errors: state.stop_reason,state.final_message="model_errors",str(exc); break
                     continue
                 state.messages.append(dict(response.message)); logger.write({"type":"model","turn":turn,"message":response.message})
+                self._emit("model_response",turn=turn,content=str(response.message.get("content") or ""),tool_count=len(calls),usage=response.usage)
                 if not calls:
                     errors+=1; state.messages.append({"role":"user","content":"Call a tool or finish; plain text is insufficient."})
                     if errors>=self.max_errors: state.stop_reason,state.final_message="empty_actions","No tool calls"; break
@@ -81,9 +89,12 @@ class Agent:
                 for call_id,name,args in calls:
                     if name=="finish":
                         accepted,text=self._verify(state,args); state.messages.append(self._tool_message(call_id,name,accepted,text))
+                        self._emit("verification",turn=turn,ok=accepted,output=text)
                         if accepted: success=True; state.stop_reason,state.final_message="verified_complete",text; break
                     else:
+                        self._emit("tool_start",turn=turn,tool=name,arguments=args)
                         event=self._execute(turn,name,args); state.add_event(event); logger.write({"type":"tool",**asdict(event)})
+                        self._emit("tool_end",turn=turn,tool=name,ok=event.ok,output=event.output,duration_ms=event.duration_ms,metadata=event.metadata)
                         state.messages.append(self._tool_message(call_id,name,event.ok,event.output,event.metadata))
                 if success: break
                 if self._stagnating(state):
@@ -95,6 +106,7 @@ class Agent:
         except KeyboardInterrupt: state.stop_reason,state.final_message="interrupted","Interrupted"
         except Exception as exc: state.stop_reason,state.final_message="internal_error",f"{type(exc).__name__}: {exc}"
         diff=self._diff(); logger.finish(state,diff)
+        self._emit("complete",success=success,stop_reason=state.stop_reason,message=state.final_message,run_dir=str(logger.run_dir),usage=state.usage)
         return AgentResult(success,state.final_message,state.stop_reason,logger.run_dir,state)
     @staticmethod
     def _calls(message):
@@ -109,7 +121,8 @@ class Agent:
         started=time.monotonic()
         try:
             if name not in self.tools: raise ValueError(f"Unknown tool: {name}")
-            result=self.tools[name].execute(args,self.policy); ok,output,meta=result.ok,result.output,result.metadata
+            result=(self.tools[name].execute(args,self.policy,on_output=lambda line: self._emit("command_output",turn=turn,output=line))
+                    if name=="run_command" else self.tools[name].execute(args,self.policy)); ok,output,meta=result.ok,result.output,result.metadata
         except Exception as exc: ok,output,meta=False,f"{type(exc).__name__}: {exc}",{}
         elapsed=int((time.monotonic()-started)*1000); meta.setdefault("duration_ms",elapsed)
         return Event(turn,name,args,ok,output,elapsed,meta)
