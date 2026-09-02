@@ -9,7 +9,9 @@ class SafetyPolicy:
       r"(^|\s)(sudo|su|mkfs|fdisk|parted|shutdown|reboot)(\s|$)",
       r"(^|\s)git\s+(push|reset\s+--hard|clean\s+-[a-z]*f)",r"(^|\s)(env|printenv)(\s|$)",
       r"(^|\s)(chown|chmod\s+.*-[a-z]*r)(\s|$)",r"(^|[;&|]\s*|\s)rm(\s|$)",r"(^|\s)(curl|wget).*(\||&&|;)\s*(sh|bash|python)")
-    def __init__(self,root:Path,allow_network=False): self.root=root.resolve(); self.allow_network=allow_network
+    def __init__(self,root:Path,allow_network=False,runtime_root:Path|None=None):
+        self.root=root.resolve(); self.allow_network=allow_network
+        self.runtime_root=(runtime_root or self.root/".agent_home").resolve()
     def path(self,value:str,write=False):
         if not value or "\0" in value: raise SafetyError("Invalid empty path")
         raw=Path(value); candidate=raw.resolve() if raw.is_absolute() else (self.root/raw).resolve()

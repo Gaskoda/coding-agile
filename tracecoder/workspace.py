@@ -44,6 +44,15 @@ def snapshot(root: Path) -> dict[str, FileState]:
                     digest.update(chunk)
         result[relative.as_posix()] = FileState(digest.hexdigest(), content)
     return result
+def workspace_digest(root: Path) -> str:
+    """Hash the observable workspace state while excluding runtime artifacts."""
+    digest = hashlib.sha256()
+    for name, state in sorted(snapshot(root).items()):
+        digest.update(name.encode("utf-8", errors="surrogateescape"))
+        digest.update(b"\0")
+        digest.update(state.digest.encode("ascii"))
+        digest.update(b"\0")
+    return digest.hexdigest()
 
 def snapshot_diff(root: Path, before: dict[str, FileState]) -> str:
     after = snapshot(root)

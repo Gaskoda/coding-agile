@@ -1,5 +1,5 @@
 from __future__ import annotations
-import os,re,selectors,signal,subprocess,time
+import os,re,selectors,shlex,signal,subprocess,time
 from dataclasses import dataclass,field
 from pathlib import Path
 from typing import Any
@@ -98,15 +98,18 @@ class ApplyPatch(Tool):
         mode="git" if (policy.root/".git").exists() else "plain"
         return ToolResult(True,"Patch applied: "+", ".join(paths),{"modified_files":paths,"mode":mode})
 class RunCommand(Tool):
-    name="run_command"; description="Run one non-interactive workspace command with timeout."
-    parameters={"type":"object","properties":{"command":{"type":"string"},"timeout":{"type":"integer"}},"required":["command"]}
-    TESTS=("pytest","unittest","npm test","pnpm test","cargo test","go test")
+    name="run_command"; description="Run one bounded workspace command only when the user's task explicitly requests installation, environment setup, execution, testing, validation, download or other command work."
+    parameters={"type":"object","properties":{"command":{"type":"string"},"timeout":{"type":"integer"},"purpose":{"type":"string","enum":["auto","test","build","inspect"]}},"required":["command"]}
+    TEST_RUNNERS={"pytest","py.test","tox","nox"}
     def execute(self,args,policy,on_output=None):
         command=self.text(args,"command"); timeout=self.integer(args,"timeout",60,1,300)
+        purpose=args.get("purpose","auto")
+        if purpose not in {"auto","test","build","inspect"}: raise ValueError("purpose must be auto, test, build or inspect")
         try: policy.command(command)
         except Exception as exc: return ToolResult(False,str(exc),{"blocked":True})
         started=time.monotonic(); chunks=[]; timed_out=False
-        env={"PATH":"/usr/local/bin:/usr/bin:/bin","HOME":str(policy.root/".agent_home"),"PYTHONPATH":str(policy.root),"LANG":"C.UTF-8","PYTHONUNBUFFERED":"1"}
+        policy.runtime_root.mkdir(parents=True,exist_ok=True)
+        env={"PATH":"/usr/local/bin:/usr/bin:/bin","HOME":str(policy.runtime_root),"PYTHONPATH":str(policy.root),"LANG":"C.UTF-8","PYTHONUNBUFFERED":"1"}
         process=subprocess.Popen(command,cwd=policy.root,shell=True,executable="/bin/bash",stdout=subprocess.PIPE,
             stderr=subprocess.STDOUT,text=True,bufsize=1,env=env,start_new_session=True)
         selector=selectors.DefaultSelector(); selector.register(process.stdout,selectors.EVENT_READ)
@@ -134,8 +137,21 @@ class RunCommand(Tool):
         output="".join(chunks)
         if len(output)>12000: output=output[:4000]+"\n... truncated ...\n"+output[-8000:]
         meta={"exit_code":process.returncode,"duration_ms":int((time.monotonic()-started)*1000),
-              "is_test":any(x in command.lower() for x in self.TESTS)}
+              "is_test":purpose=="test" or (purpose=="auto" and self._looks_like_test(command)),"purpose":purpose}
         if timed_out:
             meta["timeout"]=True; return ToolResult(False,f"Timed out after {timeout}s\n"+output[-8000:],meta)
         return ToolResult(process.returncode==0,output or "(no output)",meta)
+    @classmethod
+    def _looks_like_test(cls,command):
+        try: tokens=shlex.split(command)
+        except ValueError: return False
+        if not tokens: return False
+        executable=Path(tokens[0]).name.lower()
+        if executable in cls.TEST_RUNNERS: return True
+        if executable.startswith("python") and len(tokens)>=3 and tokens[1]=="-m":
+            return tokens[2] in {"unittest","pytest","tox","nox"}
+        if executable in {"npm","pnpm","yarn"}:
+            return any(token=="test" or token.startswith("test:") for token in tokens[1:])
+        return executable in {"cargo","go"} and len(tokens)>1 and tokens[1]=="test"
+
 def default_tools(): return [ListFiles(),SearchText(),ReadFile(),ApplyPatch(),RunCommand()]

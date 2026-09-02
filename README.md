@@ -21,10 +21,12 @@ or hosted code-execution tools. Its core is an explicit model-tool loop around f
 - `search_text`: regex-based code localization
 - `read_file`: numbered, range-limited source reads
 - `apply_patch`: validated unified-diff editing
-- `run_command`: timeout-limited commands and tests
+- `run_command`: bounded command execution when the user explicitly requests runtime work
 
-The surrounding harness adds workspace containment, secret and dangerous-command blocking, deterministic
+The surrounding harness adds workspace containment, secret protection, deterministic
 completion checks, compacted history, repeated-action detection, token accounting, and JSONL trajectories.
+Context compaction preserves the original objective, discovered `AGENTS.md` rules, modified files and unresolved failures. It is triggered by both the configured character budget and the previous API request's prompt-token usage; full raw events remain in `events.jsonl`.
+
 
 ## Requirements
 
@@ -65,7 +67,7 @@ The target can be either a Git repository or an ordinary project directory:
 ```bash
 python3 -m tracecoder.cli \
   --cwd /path/to/project \
-  'Fix the failing parser test without weakening tests'
+  'Create a small command-line todo application with usage instructions'
 ```
 
 Git targets use `git apply` and `git diff`. Plain directories use GNU `patch`, an in-memory
@@ -80,8 +82,8 @@ Start a reusable prompt for one target project:
 python3 -m tracecoder.cli --interactive --cwd /path/to/project
 ```
 
-Enter a coding task at `tracecoder>`. The terminal immediately reports model waits, planned tool calls,
-file reads and patches, command output line by line, test results, and completion verification. Use `/help`
+Enter a coding task at `tracecoder>`. The terminal immediately reports model waits, planned file operations,
+file reads, patches and the final delivery check. Use `/help`
 for prompt commands and `/quit` to exit. A one-shot task also shows live progress by default; pass `--quiet`
 for the previous final-result-only output.
 
@@ -90,29 +92,45 @@ Useful controls:
 ```text
 --max-turns N             hard turn budget, default 30
 --context-chars N         deterministic compaction threshold
---no-require-tests        allow completion without a successful test command
---allow-network-commands  let the agent invoke network CLIs (off by default)
+--state-dir PATH          override TraceCoder's own state directory
+--allow-network-commands  explicit override for ambiguous network-related task wording
 ```
 
-Network access in the outer development environment does not imply network access for the model-controlled
-shell. The latter stays disabled unless explicitly enabled.
+## Project delivery policy
 
-## Completion policy
+TraceCoder's primary job is to write the requested project code. It does not create tests merely to satisfy
+the harness, and it does not install packages, create environments, execute the project, probe the runtime or
+run tests by default.
 
-A `finish` request is rejected when there is no diff, whitespace validation fails, the latest test failed,
-no test was run (default), the change is excessively large, or assertions appear to have been removed.
+For a generated Python project, the agent records third-party packages in `requirements.txt` (or preserves
+the dependency manifest already used by the project). The project README contains the commands that a user
+can run later to create an environment, install those declared packages and start the application. Other
+ecosystems follow the same rule using their native manifest, such as `package.json` or `Cargo.toml`.
+
+When the user's task explicitly asks TraceCoder to install dependencies, build an environment, run or test
+the project, validate behavior, download resources or perform related command work, `run_command` is available
+and its output is streamed to the terminal. These optional actions do not become a universal completion gate.
+
+## Delivery check
+
+A `finish` request is rejected when there is no diff, patch-format validation fails, or the change is excessively
+large. This is a file-level integrity check, not project
+execution or environment validation.
 Git targets use `git diff --check`; plain directories validate their generated unified diff.
-A model claim alone is never treated as proof of completion. After a passing test, the harness explicitly
-asks the model to finish instead of rereading without a concrete risk. If the turn budget is exhausted before
-that call, the same deterministic verifier runs automatically: a valid diff and latest passing test produce
-`verified_complete_auto`; otherwise the run remains a `max_turns` failure.
+If the model reaches the turn limit without calling `finish`, the same file-level check runs automatically.
 
 ## Run artifacts
 
-Every invocation writes only under `<target>/.runs/<timestamp>/`:
+Every invocation writes under TraceCoder's own `<tracecoder>/.tracecoder/runs/<timestamp>/`, not inside
+the user's target project.
+Use `--state-dir PATH` to choose another external state location. The target directory therefore receives
+only the code and project files needed for the task.
+
+The live CLI prints each model turn, tool call, requested command output, delivery-check result and a final
+count of tool steps and modified files. These events are visible during execution, not only after it ends.
 
 - `events.jsonl`: model and tool events
-- `summary.json`: outcome, files and test evidence
+- `summary.json`: outcome and affected files
 - `final.diff`: final patch, including untracked files
 - `transcript.md`: compact human-readable trajectory
 
@@ -124,17 +142,16 @@ API keys are read by the model client and are not inserted into prompts or logs.
 python3 -m unittest discover -s tests -v
 ```
 
-The suite uses temporary Git repositories and ordinary directories under `/mnt/82_store/mj`, exercises
-the real tools in both modes, and includes deterministic scripted-model repairs from a failing test to a
-verifier-approved finish.
+These are private development tests for TraceCoder itself. They are not exposed to the model and do not cause
+TraceCoder to test user projects.
 
 ## Design rationale
 
 The implementation follows the strongest practical lessons from current coding-agent work: keep the core
-loop linear and inspectable; use executable feedback; localize before loading context; edit with narrow
-patches; separate the model's completion request from deterministic verification; and preserve trajectories
-for debugging and later learning. It intentionally avoids multi-agent orchestration, vector databases, and
-training infrastructure until the single-agent baseline is reliable.
+loop linear and inspectable; localize before loading context; edit with narrow patches; deliver reproducible
+dependency manifests and documentation; and preserve trajectories for debugging and later learning. It
+intentionally avoids target-project execution, multi-agent orchestration, vector databases, and training
+infrastructure until the code-writing baseline is reliable.
 ## Research references
 
 The implementation is original, but its design choices were informed by:

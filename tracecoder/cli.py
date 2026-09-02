@@ -23,7 +23,8 @@ class LiveConsole:
     def __call__(self,event):
         kind=event["type"]
         if kind=="start":
-            self._line(self._paint(f"TraceCoder · {event['workspace_mode']} · {event['root']}","1;36")); self._line(f"记录: {event['run_dir']}")
+            self._line(self._paint(f"TraceCoder · {event['workspace_mode']} · {event['root']}","1;36"))
+            self._line(f"实时轨迹已开启 · 运行记录: {event['run_dir']}")
         elif kind=="model_wait": self._line(self._paint(f"\n[{event['turn']}] 等待模型…","36"))
         elif kind=="model_response":
             content=event.get("content","").strip()
@@ -38,18 +39,23 @@ class LiveConsole:
             if output and event["tool"]!="run_command":
                 if len(output)>6000: output=output[:2000]+"\n… 输出已截断 …\n"+output[-4000:]
                 self._line(output)
-        elif kind=="verification":
-            mark=self._paint("验证通过","1;32") if event["ok"] else self._paint("验证未通过","1;31"); self._line(f"{mark}\n{event['output']}")
-        elif kind=="complete": self._line(self._paint(f"\n结束: {event['stop_reason']}","1;32" if event["success"] else "1;31"))
+        elif kind=="delivery_check":
+            mark=self._paint("交付检查通过","1;32") if event["ok"] else self._paint("交付检查未通过","1;31"); self._line(f"{mark}\n{event['output']}")
+        elif kind=="context_compacted":
+            self._line(self._paint(f"上下文已压缩 · 第 {event['compactions']} 次 · 保留 {event['messages']} 条消息","35"))
+        elif kind=="complete":
+            detail=f"{event.get('tool_steps',0)} 个工具步骤 · 修改 {event.get('files_modified',0)} 个文件"
+            self._line(self._paint(f"\n结束: {event['stop_reason']} · {detail}","1;32" if event["success"] else "1;31"))
 
 def parser():
-    p=argparse.ArgumentParser(description="Small, test-driven and auditable coding agent")
+    p=argparse.ArgumentParser(description="Small, observable and auditable coding agent")
     p.add_argument("task",nargs="?"); p.add_argument("--cwd",type=Path,default=Path.cwd())
     p.add_argument("--config",type=Path,default=DEFAULT_CONFIG,help=f"Local JSON config (default: {DEFAULT_CONFIG})")
     p.add_argument("--model",default=None); p.add_argument("--base-url",default=None)
     p.add_argument("--max-turns",type=int,default=None); p.add_argument("--context-chars",type=int,default=None)
-    p.add_argument("--no-require-tests",action="store_true"); p.add_argument("--allow-network-commands",action="store_true")
+    p.add_argument("--state-dir",type=Path,default=None,help="TraceCoder state directory; kept outside the target by default")
     p.add_argument("-i","--interactive",action="store_true",help="Start an interactive task prompt")
+    p.add_argument("--allow-network-commands",action="store_true",help="Allow network CLIs even when task wording is ambiguous")
     p.add_argument("--quiet",action="store_true",help="Hide live progress and print only the result")
     return p
 
@@ -67,8 +73,8 @@ def _settings(args):
 def _run(task,args,settings,console):
     model_name,base_url,api_key,max_turns,context_chars=settings
     model=OpenAICompatibleModel(model_name,base_url,api_key=api_key)
-    result=Agent(model,args.cwd,max_turns=max_turns,context_chars=context_chars,require_tests=not args.no_require_tests,
-        allow_network_commands=args.allow_network_commands,observer=console).run(task)
+    result=Agent(model,args.cwd,max_turns=max_turns,context_chars=context_chars,allow_network_commands=args.allow_network_commands,
+        observer=console,state_dir=args.state_dir).run(task)
     print(result.message); print(f"\nStop reason: {result.stop_reason}"); print(f"Run artifacts: {result.run_dir}"); print(f"Tokens: {result.state.usage['total_tokens']}")
     return 0 if result.success else 1
 
