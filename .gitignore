@@ -9,5 +9,5 @@ build/
 .tracecoder/
 tracecoder.local.json
 work/
-
+docs/
 /tests/
