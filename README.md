@@ -1,168 +1,48 @@
 # TraceCoder
 
-## AGENTS.md project instructions
+Git 仓库：https://github.com/Gaskoda/coding-agile
 
-TraceCoder v0.2 automatically loads project instructions from `AGENTS.md`. Rules are hierarchical: a root file applies to the whole workspace, while a file in a nested directory applies only below that directory and overrides conflicting parent rules. Root instructions are supplied at startup; newly discovered nested instructions are shown before the first affected edit and the edit must then be retried.
+TraceCoder 是一个独立设计和实现的轻量编程智能体。它通过大语言模型原生 Tool Calling 接口读取、搜索和修改本地项目文件，并根据用户任务完成代码编写。项目未使用 LangChain、LlamaIndex、OpenAI Agents SDK、Claude Agent SDK、AutoGen、CrewAI 等 Agent 框架，也不依赖服务端托管的代码执行或文件工具。
 
-Example:
+## 特色功能
 
-```text
-project/AGENTS.md
-project/backend/AGENTS.md
-project/backend/app.py
-```
+1. 支持从零创建项目，也支持修改 Git 仓库和普通目录。
+2. 默认优先交付源码、依赖清单和使用文档，不为满足 Agent 流程强制创建测试或搭建验证环境。
+3. 用户明确要求时，可执行安装依赖、创建环境、运行项目、测试程序或下载资源等命令。
+4. 终端实时显示模型轮次、工具调用、文件修改、命令输出和交付结果。
+5. 支持分层 `AGENTS.md`、上下文压缩、重复行为检测和任务状态保留。
+6. 运行记录保存在 TraceCoder 自身的 `.tracecoder` 目录，不污染用户项目。
 
-When working on `backend/app.py`, both instruction files apply, with `backend/AGENTS.md` taking precedence. Each file is limited to 32,000 characters and the applicable chain to 64,000 characters.
+详细命令行参数和交互式 CLI 用法见 [`tracecoder/CLI.md`](tracecoder/CLI.md)。
 
-TraceCoder is a small coding-agent harness implemented without LangChain, LlamaIndex, an Agents SDK,
-or hosted code-execution tools. Its core is an explicit model-tool loop around five local tools:
+## 配置与运行
 
-- `list_files`: bounded repository inspection
-- `search_text`: regex-based code localization
-- `read_file`: numbered, range-limited source reads
-- `apply_patch`: validated unified-diff editing
-- `run_command`: bounded command execution when the user explicitly requests runtime work
-
-The surrounding harness adds workspace containment, secret protection, deterministic
-completion checks, compacted history, repeated-action detection, token accounting, and JSONL trajectories.
-Context compaction preserves the original objective, discovered `AGENTS.md` rules, modified files and unresolved failures. It is triggered by both the configured character budget and the previous API request's prompt-token usage; full raw events remain in `events.jsonl`.
-
-
-## Requirements
-
-- Python 3.10+
-- GNU patch (for non-Git project directories)
-- Git is optional for target directories, but used when available
-- An OpenAI-compatible chat-completions endpoint with native tool calling
-
-No Python runtime dependencies are required.
-
-## Configure DeepSeek
-
-Copy the tracked blank example to the ignored local config, then edit it:
+要求 Python 3.10 及以上版本。TraceCoder 运行时只使用 Python 标准库；处理普通非 Git 目录时需要 GNU patch。
 
 ```bash
 cp tracecoder.example.json tracecoder.local.json
-vim tracecoder.local.json
 ```
 
-```json
-{
-  "api_key": "your-key",
-  "base_url": "https://api.deepseek.com/v1",
-  "model": "deepseek-v4-pro",
-  "max_turns": 30,
-  "context_chars": 80000
-}
-```
+在 `tracecoder.local.json` 中填写自己的 API Key、接口地址和模型名称。该文件已被 Git 忽略，真实密钥不得提交到仓库。
 
-`tracecoder.local.json` is ignored by Git. Never put a real key in the tracked example: replacing
-a committed secret with an empty value does not remove it from Git history. Command-line options override
-the local file; environment variables remain a fallback. Use `--config /path/file.json` for another file.
-
-## Run
-
-The target can be either a Git repository or an ordinary project directory:
+单次运行：
 
 ```bash
 python3 -m tracecoder.cli \
   --cwd /path/to/project \
-  'Create a small command-line todo application with usage instructions'
+  "创建一个命令行 Todo 项目，并写好依赖和使用说明"
 ```
 
-Git targets use `git apply` and `git diff`. Plain directories use GNU `patch`, an in-memory
-pre-task snapshot, SHA-256 file tracking, and `difflib` to produce the same `final.diff`. TraceCoder
-does not create a Git repository in a plain target.
-
-### Interactive live CLI
-
-Start a reusable prompt for one target project:
+交互运行：
 
 ```bash
-python3 -m tracecoder.cli --interactive --cwd /path/to/project
+python3 -m tracecoder.cli -i --cwd /path/to/project
 ```
 
-Enter a coding task at `tracecoder>`. The terminal immediately reports model waits, planned file operations,
-file reads, patches and the final delivery check. Use `/help`
-for prompt commands and `/quit` to exit. A one-shot task also shows live progress by default; pass `--quiet`
-for the previous final-result-only output.
+任务明确需要联网时，可添加 `--allow-network-commands`。
 
-Useful controls:
+## 架构与安全
 
-```text
---max-turns N             hard turn budget, default 30
---context-chars N         deterministic compaction threshold
---state-dir PATH          override TraceCoder's own state directory
---allow-network-commands  explicit override for ambiguous network-related task wording
-```
+`agent.py` 实现模型—工具循环、任务状态和结束条件；`tools.py` 实现文件浏览、搜索、读取、补丁修改及受限命令执行；`context.py` 和 `task_state.py` 管理长上下文；`instructions.py` 加载分层规则；`safety.py` 负责工作区隔离、敏感文件保护和危险命令拦截；`workspace.py` 负责普通目录快照和差异生成。
 
-## Project delivery policy
-
-TraceCoder's primary job is to write the requested project code. It does not create tests merely to satisfy
-the harness, and it does not install packages, create environments, execute the project, probe the runtime or
-run tests by default.
-
-For a generated Python project, the agent records third-party packages in `requirements.txt` (or preserves
-the dependency manifest already used by the project). The project README contains the commands that a user
-can run later to create an environment, install those declared packages and start the application. Other
-ecosystems follow the same rule using their native manifest, such as `package.json` or `Cargo.toml`.
-
-When the user's task explicitly asks TraceCoder to install dependencies, build an environment, run or test
-the project, validate behavior, download resources or perform related command work, `run_command` is available
-and its output is streamed to the terminal. These optional actions do not become a universal completion gate.
-
-## Delivery check
-
-A `finish` request is rejected when there is no diff, patch-format validation fails, or the change is excessively
-large. This is a file-level integrity check, not project
-execution or environment validation.
-Git targets use `git diff --check`; plain directories validate their generated unified diff.
-If the model reaches the turn limit without calling `finish`, the same file-level check runs automatically.
-
-## Run artifacts
-
-Every invocation writes under TraceCoder's own `<tracecoder>/.tracecoder/runs/<timestamp>/`, not inside
-the user's target project.
-Use `--state-dir PATH` to choose another external state location. The target directory therefore receives
-only the code and project files needed for the task.
-
-The live CLI prints each model turn, tool call, requested command output, delivery-check result and a final
-count of tool steps and modified files. These events are visible during execution, not only after it ends.
-
-- `events.jsonl`: model and tool events
-- `summary.json`: outcome and affected files
-- `final.diff`: final patch, including untracked files
-- `transcript.md`: compact human-readable trajectory
-
-API keys are read by the model client and are not inserted into prompts or logs.
-
-## Tests
-
-```bash
-python3 -m unittest discover -s tests -v
-```
-
-These are private development tests for TraceCoder itself. They are not exposed to the model and do not cause
-TraceCoder to test user projects.
-
-## Design rationale
-
-The implementation follows the strongest practical lessons from current coding-agent work: keep the core
-loop linear and inspectable; localize before loading context; edit with narrow patches; deliver reproducible
-dependency manifests and documentation; and preserve trajectories for debugging and later learning. It
-intentionally avoids target-project execution, multi-agent orchestration, vector databases, and training
-infrastructure until the code-writing baseline is reliable.
-## Research references
-
-The implementation is original, but its design choices were informed by:
-
-- mini-SWE-agent: minimal linear loop and shell-oriented baseline
-  https://github.com/SWE-agent/mini-swe-agent
-- SWE-agent: explicit agent-computer interfaces and trajectory inspection
-  https://github.com/SWE-agent/SWE-agent
-- Dive into Claude Code (2026): context compaction, permissions and harness design
-  https://arxiv.org/abs/2604.14228
-- What Context Does a Coding Agent Actually Need to Act? (2026): focused source context
-  https://arxiv.org/abs/2607.09691
-- SWE-smith: executable software-engineering tasks and trajectory-driven evaluation
-  https://github.com/SWE-bench/SWE-smith
+所有模型文件操作都限制在目标目录内。系统禁止读取常见凭据、逃出工作区、危险删除、推送代码、发布或部署。API Key 只从环境变量或本地配置文件读取，不写入仓库和运行记录。交付检查只确认存在有效文件修改，不强制执行测试。
